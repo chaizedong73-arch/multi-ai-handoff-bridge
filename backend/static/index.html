@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>多AI交接桥 · 控制台</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🌉</span>
+      <div>
+        <h1>多AI交接桥 · 控制台 <span class="ver">v2</span></h1>
+        <p class="tagline">把 A agent 干过的事，带到 B agent 手里 —— ①采集 → ②归一化 → ③检索 → ④简报，每个环节可检查</p>
+      </div>
+    </div>
+    <div class="status-pill" id="procPill" title="服务进程真实状态（5s 轮询 /proc）">连接中…</div>
+  </header>
+
+  <div class="pipeline-strip" id="pipeStrip">
+    <button class="pipe-card" data-goto="stage1"><span class="pc-num">①</span><span class="pc-name">采集</span><span class="pc-metric" id="pm1">…</span><span class="pc-dot" id="pd1"></span></button>
+    <span class="pipe-arrow">→</span>
+    <button class="pipe-card" data-goto="stage2"><span class="pc-num">②</span><span class="pc-name">归一化</span><span class="pc-metric" id="pm2">…</span><span class="pc-dot" id="pd2"></span></button>
+    <span class="pipe-arrow">→</span>
+    <button class="pipe-card" data-goto="stage3"><span class="pc-num">③</span><span class="pc-name">检索</span><span class="pc-metric" id="pm3">…</span><span class="pc-dot" id="pd3"></span></button>
+    <span class="pipe-arrow">→</span>
+    <button class="pipe-card" data-goto="stage4"><span class="pc-num">④</span><span class="pc-name">简报</span><span class="pc-metric" id="pm4">…</span><span class="pc-dot" id="pd4"></span></button>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="stage1" role="tab">① 采集</button>
+    <button class="tab" data-tab="stage2" role="tab">② 归一化</button>
+    <button class="tab" data-tab="stage3" role="tab">③ 检索</button>
+    <button class="tab" data-tab="stage4" role="tab">④ 简报</button>
+    <button class="tab" data-tab="ledger" role="tab">台账 · 评测</button>
+    <button class="tab" data-tab="service" role="tab">服务 · 生命周期</button>
+  </nav>
+
+  <main>
+    <!-- ① 采集 -->
+    <section class="panel active" id="panel-stage1">
+      <div class="panel-head">
+        <h2>① 采集 —— v1 事件流（只读）</h2>
+        <span class="tech-badge" data-tech="v1 ai-agent-monitor 实时监控 append-only 写出 events.jsonl；桥只读。真实聊天留本机、不入仓库。行号即 ④ 简报里的引用出处。">技术说明 ⓘ</span>
+      </div>
+      <div class="card"><div id="s1Meta" class="loading">读取中…</div></div>
+      <div class="card">
+        <h3>原始行回查器 <span class="demo-tag">④ 简报/③ 检索引用的 events.jsonl:行号 在这里核对</span></h3>
+        <div class="filters">
+          <label>起始行<input id="evStart" type="number" value="1" min="1" /></label>
+          <label>条数<input id="evLimit" type="number" value="10" min="1" max="200" /></label>
+          <button id="btnEvLoad" class="primary">读取</button>
+        </div>
+        <div id="evRows" class="rows-box"><div class="empty">尚未读取</div></div>
+      </div>
+    </section>
+
+    <!-- ② 归一化 -->
+    <section class="panel" id="panel-stage2">
+      <div class="panel-head">
+        <h2>② 归一化 —— 语料 + 水位线</h2>
+        <span class="tech-badge" data-tech="events_to_corpus.normalize：message/change 只产新行、session 永远全量重算；redact 掩码后落 events-corpus*.jsonl；catchup 按行偏移水位线增量懒补进 seekdb 集合，无新行 early-return 连模型都不醒。">技术说明 ⓘ</span>
+      </div>
+      <div class="card"><div id="s2Stats" class="loading">读取中…</div></div>
+      <div class="card">
+        <h3>运行增量懒补 <span class="demo-tag">真实动作：水位线对比 → 有新行才嵌</span></h3>
+        <div class="row">
+          <button id="btnCatchup" class="primary">运行 catchup</button>
+          <span id="catchupMsg" class="msg"></span>
+        </div>
+        <pre id="catchupOut" class="context-box hidden"></pre>
+      </div>
+      <div class="card">
+        <h3>归一化语料抽样（redact 后）</h3>
+        <div class="filters">
+          <label>起始行<input id="cpStart" type="number" value="1" min="1" /></label>
+          <label>条数<input id="cpLimit" type="number" value="8" min="1" max="200" /></label>
+          <button id="btnCpLoad" class="ghost">读取</button>
+        </div>
+        <div id="cpRows" class="rows-box"><div class="empty">尚未读取</div></div>
+      </div>
+    </section>
+
+    <!-- ③ 检索 -->
+    <section class="panel" id="panel-stage3">
+      <div class="panel-head">
+        <h2>③ 检索 —— seekdb 三路混合</h2>
+        <span class="tech-badge" data-tech="向量 + 关键词 + 结构化过滤，全量重排；每条命中带 events.jsonl:行号 出处。集合与嵌入模型惰性加载，是否驻留（RSS）如实显示。">技术说明 ⓘ</span>
+      </div>
+      <div class="card">
+        <div id="s3Status" class="loading">读取中…</div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnS3Load" class="primary">加载 seekdb 集合 + 嵌入模型</button>
+          <span id="s3LoadMsg" class="msg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>混合检索实验台</h3>
+        <label>检索词<input id="qInput" type="text" placeholder="例如：窗口提醒 任务跟踪 提醒项目" /></label>
+        <div class="filters">
+          <label>按 agent<select id="qOwner"><option value="">全部</option></select></label>
+          <label>按类型<select id="qKind"><option value="">全部</option><option value="message">message</option><option value="change">change</option><option value="session">session</option></select></label>
+          <label>Top-K<input id="qTopK" type="number" value="6" min="1" max="20" /></label>
+        </div>
+        <div class="row">
+          <button id="btnSearch" class="primary">检索</button>
+          <span id="searchMsg" class="msg"></span>
+        </div>
+        <div id="s3Results" class="results" style="margin-top:10px"><div class="empty">尚未检索</div></div>
+      </div>
+      <div class="card">
+        <h3>检索日志（近 10 次）</h3>
+        <pre id="s3Rlog" class="context-box">未加载</pre>
+      </div>
+    </section>
+
+    <!-- ④ 简报 -->
+    <section class="panel" id="panel-stage4">
+      <div class="panel-head">
+        <h2>④ 简报 —— 《交接简报》生成器</h2>
+        <span class="tech-badge" data-tech="冷启动多 facet 检索 → 九段式自包含简报，每条带 events.jsonl:行号 溯源；不调 LLM、不做 AI 摘要。评测 3 用例机械打分 95.8（ST 基线）。分阶段异步：懒补 → 载入模型 → 检索+组装。">技术说明 ⓘ</span>
+      </div>
+      <div class="card">
+        <h3>生成一份真实简报</h3>
+        <label>接手意图<input id="bIntent" type="text" value="zcode 接手 chatgpt 的窗口提醒/任务跟踪项目" /></label>
+        <label>检索主题词<input id="bTopic" type="text" value="窗口提醒 任务跟踪 提醒项目 工作环境 现场恢复 真实笔记" /></label>
+        <div class="filters">
+          <label>交出方 src<select id="bSrc"><option value="chatgpt">chatgpt</option><option value="codex">codex</option><option value="dsh">dsh</option><option value="workbuddy">workbuddy</option><option value="">(不限)</option></select></label>
+          <label>接手方 dst<select id="bDst"><option value="zcode">zcode</option><option value="codex">codex</option><option value="trae">trae</option><option value="dsh">dsh</option><option value="workbuddy">workbuddy</option><option value="">(不限)</option></select></label>
+          <label class="inline"><input id="bCatchup" type="checkbox" checked /> 先懒补</label>
+        </div>
+        <div class="row">
+          <button id="btnBrief" class="primary">生成简报</button>
+          <span id="briefMsg" class="msg"></span>
+        </div>
+        <div id="s4Phases" class="phases hidden"></div>
+      </div>
+      <div class="card hidden" id="s4ResultCard">
+        <h3>简报成品 <span id="s4Meta" class="demo-tag"></span>
+          <button id="btnBriefRaw" class="ghost small" style="float:right">原文/分节切换</button></h3>
+        <div id="s4Timing" class="timing-chips"></div>
+        <div id="s4Brief" class="brief-view"></div>
+      </div>
+      <div class="card">
+        <h3>历史简报 <span class="demo-tag">控制台产物 + MCP 轻壳落盘副本</span></h3>
+        <div id="s4History" class="brief-list"><div class="empty">读取中…</div></div>
+      </div>
+    </section>
+
+    <!-- 台账 · 评测 -->
+    <section class="panel" id="panel-ledger">
+      <div class="panel-head">
+        <h2>台账 · 评测 —— 桥真的被用了吗，用得多准</h2>
+        <span class="tech-badge" data-tech="call-ledger.jsonl：每次 MCP tools/call 在桥侧落一行（host/src/dst/耗时/字节），调用方编不了；评测为机械打分（events.jsonl 行号为答案 key，固定不改）。">技术说明 ⓘ</span>
+      </div>
+      <div class="card">
+        <h3>跨 agent 调用台账 <button id="btnLedgerReload" class="ghost small" style="float:right">刷新</button></h3>
+        <div id="ledgerRows" class="rows-box"><div class="empty">读取中…</div></div>
+      </div>
+      <div class="card">
+        <h3>评测报告（机械打分）</h3>
+        <div id="evalCards" class="eval-grid"><div class="empty">读取中…</div></div>
+      </div>
+    </section>
+
+    <!-- 服务 · 生命周期 -->
+    <section class="panel" id="panel-service">
+      <div class="panel-head">
+        <h2>服务 · 生命周期</h2>
+        <span class="tech-badge" data-tech="状态机：已停止→启动中→运行中→关闭中→已停止。状态来自 /proc 真实探测，不因点击就乐观改。重资产（嵌入模型）按需显式加载，RSS 如实报。">技术说明 ⓘ</span>
+      </div>
+      <div class="card">
+        <h3>当前状态 <span id="svcStateChip" class="chip">—</span></h3>
+        <div id="svcBody" class="loading">探测中…</div>
+        <div class="row" style="margin-top:10px">
+          <button id="btnShutdown" class="danger">关闭服务（SIGTERM）</button>
+          <span id="svcMsg" class="msg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>启动 / 停止入口（回到最初状态的方式）</h3>
+        <ul class="weak-list">
+          <li>启动：双击 <code>multi-ai\start-bridge.cmd</code>（reg.cmd 登记 owner=zcode · name=handoff-bridge-console，浏览器开 <code>http://localhost:8765/</code>）</li>
+          <li>停止：本页「关闭服务」按钮，或 <code>multi-ai\stop-bridge.cmd</code>（按 PID 文件 SIGTERM，8s 不退才 SIGKILL）</li>
+          <li>资源释放：服务退出即释放全部内存；简报产物留在 <code>~/multi-ai-data/briefs/</code>，台账/语料不动</li>
+          <li>异常：端口被占 → 先 stop 再 start；启动失败窗口会显示原因，修后可重试</li>
+          <li>红线对齐：不偷偷常驻——本服务显式启停 + 进程登记；MCP 重 worker 依旧跑完即退</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>多AI交接桥（v2）· seekdb + PowerContext · 本地无云</span>
+    <a href="/legacy-demo.html">旧演示页</a>
+    <span class="foot-badge">ZC · 2026-11-07</span>
+  </footer>
+
+  <div id="techTip" class="tech-tip hidden"></div>
+  <script src="bridge.js"></script>
+</body>
+</html>
