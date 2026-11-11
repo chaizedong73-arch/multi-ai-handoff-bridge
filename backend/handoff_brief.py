@@ -266,6 +266,47 @@ def _detect_anchors(dedup: "_Dedup", kws: List[str], dbg_tag: str = "", owners: 
     return {s for s, c in mass.items() if c >= thresh}
 
 
+# ============ PowerContext 记忆复用（0.7.5，可选） ============
+# 对齐赛题要求「记忆被保存并在后续使用中复用」：生成前搜历史交接记忆（跨次接手复用），
+# 落盘后 remember 本次交接 + 客户端自播 handoff 工件（upsert）。Server 不可用时全部
+# 静默跳过，简报生成本身不受影响。
+
+def _pc_read(topic: str) -> Optional[Dict]:
+    """生成前：按主题搜 PowerContext 历史交接记忆。不可用返回 None。"""
+    try:
+        import pc
+        if not pc.is_available():
+            return None
+        res = pc.search(topic, limit=5)
+        hits = [h for h in (res.get("hits") or []) if str(h.get("text") or "").strip()]
+        return {"hits": hits[:5]} if hits else None
+    except Exception:
+        return None
+
+
+def _pc_write(intent: str, topic: str, src, dst, md: str, out_path: str) -> Optional[Dict]:
+    """落盘后：remember 一条交接记录 + 客户端自播 handoff 工件（upsert）。失败不致命。"""
+    try:
+        import pc
+        if not pc.is_available():
+            return None
+        rec = pc.remember(
+            f"交接简报已生成：topic={topic}（{src}→{dst}）；intent={intent}；"
+            f"产物={out_path}（{len(md.encode('utf-8'))} bytes）。未完成线头见简报④。",
+            kind="working_note", reason="④交接简报落盘（PowerContext 记忆复用）")
+        art = pc.create_handoff(
+            objective=f"交接简报：{topic}",
+            state=[{"summary": f"intent={intent}；产物={out_path}", "citations": []}],
+            disposition="continuable",
+            next_action={"summary": "接手方按简报④未解决线头继续，终审对照 vault 维护日志"},
+            omissions=[{"summary": "简报为机械检索线索（无 LLM 综合），非终稿"}])
+        return {"entry_id": (rec.get("citation") or {}).get("entry_id"),
+                "artifact_id": (art or {}).get("artifact_id")}
+    except Exception as e:
+        print(f"[pc] PowerContext 记忆写入跳过（不致命）：{type(e).__name__}: {e}")
+        return None
+
+
 
 class _Dedup:
     """跨 facet 去重：同一段文本只保留分数最高的一次出现。"""
@@ -362,7 +403,7 @@ def _line(r: Dict, maxlen: int = 320) -> str:
     return f"  - {txt}\n    ← {_cite(r)}  [{_owner(r)}/{_role(r)} score={r.get('score')}]"
 
 
-def build_brief(intent: str, topic: str, src: Optional[str], dst: Optional[str]) -> str:
+def build_brief(intent: str, topic: str, src: Optional[str], dst: Optional[str], pc_read: Optional[Dict] = None) -> str:
     _NOW = _dt.datetime.now().timestamp()
     _RECENT_CUT = _NOW - 14 * 86400  # 最近 14 天（0.7.2 实时性保障的窗口）
 
@@ -521,6 +562,9 @@ def build_brief(intent: str, topic: str, src: Optional[str], dst: Optional[str])
     L.append(f"- **锚定会话**：{len(anchors)} 个（topic 命中质量达阈值=项目核心；只 name-drop 一两次的串台会话被排除）")
     L.append(f"- **语料库**：{config.COLLECTION_NAME}（真实 events.jsonl 全量 6 agent）")
     L.append(f"- **生成时间**：{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}（按需冷启动，非常驻）")
+    if pc_read and pc_read.get("hits"):
+        L.append(f"- **历史交接记忆**：PowerContext 命中 {len(pc_read['hits'])} 条相关记录（跨次交接复用），"
+                 f"最近一条：{_clean(pc_read['hits'][0].get('text', ''))[:80]}")
     L.append("")
     L.append("> 每条均带 `events.jsonl:行号` 出处，可回溯核对。本简报只做「捞全+去重+标出处」，")
     L.append("> 不做 AI 摘要——综合与决策留给接手方 agent。")
@@ -652,11 +696,17 @@ def main() -> None:
 
     st = store.stats()
     print(f"[brief] collection={config.COLLECTION_NAME} count={st.get('count')} byOwner={st.get('byOwner')}")
-    md = build_brief(a.intent, a.topic, a.src, a.dst)
+    pc_read = _pc_read(a.topic)
+    if pc_read:
+        print(f"[pc] 历史交接记忆命中 {len(pc_read['hits'])} 条（写入简报头部）")
+    md = build_brief(a.intent, a.topic, a.src, a.dst, pc_read=pc_read)
     out = a.out or os.path.join(str(config.DATA_DIR), "briefs", "handoff-brief.md")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(md)
+    pc_write = _pc_write(a.intent, a.topic, a.src, a.dst, md, out)
+    if pc_write:
+        print(f"[pc] PowerContext 已记录：entry={pc_write.get('entry_id')} artifact={pc_write.get('artifact_id')}")
     print(f"[brief] written={out} bytes={len(md.encode('utf-8'))}")
 
 
